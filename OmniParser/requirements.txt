@@ -9,13 +9,13 @@ azure-identity
 numpy==1.26.4
 opencv-python
 opencv-python-headless
-gradio
+gradio>=4.50.0
 dill
 accelerate
 timm
 einops==0.8.0
 paddlepaddle
-paddleocr
+paddleocr==2.10.0
 ruff==0.6.7
 pre-commit==3.8.0
 pytest==8.3.3
