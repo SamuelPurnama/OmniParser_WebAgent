@@ -1,0 +1,96 @@
+# ============================================
+# Monorepo Root .gitignore
+# Combines rules from OmniParser and WebAgent
+# ============================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments (both projects)
+venv/
+.venv/
+
+# Environment variables and secrets
+.env
+.env.*
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VSCode and other editor settings
+.vscode/
+.idea/
+
+# Test and coverage outputs
+htmlcov/
+.tox/
+.nox/
+.coverage
+coverage.xml
+*.cover
+*.py,cover
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs
+*.log
+wget-log
+
+# Results and cache
+*.sqlite3
+*.db
+*.pot
+*.mo
+*.pkl
+*.h5
+*.csv
+*.jsonl
+
+# ============================================
+# OmniParser specific
+# ============================================
+# Model weights
+OmniParser/weights/
+weights/icon_caption_blip2
+weights/icon_caption_florence
+weights/icon_detect/
+weights/icon_detect_v1_5/
+weights/icon_detect_v1_5_2/
+weights/icon_caption_florence_v2/
+
+# Gradio cache
+.gradio
+
+# Debug files
+debug.ipynb
+index.html?linkid=2289031
+
+# OmniParser uploads
+omnitool/gradio/uploads/
+
+# ============================================
+# WebAgent specific
+# ============================================
+# Results and generated data
+web_agent/results/
+web_agent/data/browser_sessions/
+web_agent/data/results/
+web_agent/data/interaction_logs/
+web_agent/screenshots/
+
+# Browser sessions and recorder sessions
+web_agent/browser_sessions/
+web_agent/recorder_sessions/
+web_agent/test_approach/data/
+web_agent/test_approach/bounding_box_sessions/
+
