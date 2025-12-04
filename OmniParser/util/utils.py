@@ -47,6 +47,11 @@ from util.box_annotator import BoxAnnotator
 def get_caption_model_processor(model_name, model_name_or_path="Salesforce/blip2-opt-2.7b", device=None):
     if not device:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        # Validate device: if CUDA is requested but not available, fall back to CPU
+        if device == "cuda" and not torch.cuda.is_available():
+            print(f"⚠️  CUDA requested but not available. Falling back to CPU.")
+            device = "cpu"
     if model_name == "blip2":
         from transformers import Blip2Processor, Blip2ForConditionalGeneration
         processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
@@ -459,12 +464,29 @@ def get_som_labeled_img(image_source: Union[str, Image.Image], model=None, BOX_T
         print('no ocr bbox!!!')
         ocr_bbox = None
 
-    ocr_bbox_elem = [{'type': 'text', 'bbox':box, 'interactivity':False, 'content':txt, 'source': 'box_ocr_content_ocr'} for box, txt in zip(ocr_bbox, ocr_text) if int_box_area(box, w, h) > 0] 
+    # Handle case when ocr_bbox is None or empty (no OCR text found)
+    # Ensure ocr_text is a list (default parameter might be overridden)
+    if ocr_text is None:
+        ocr_text = []
+    
+    if ocr_bbox is not None and ocr_text and len(ocr_bbox) > 0 and len(ocr_text) > 0:
+        # Ensure ocr_bbox and ocr_text have matching lengths
+        min_len = min(len(ocr_bbox), len(ocr_text))
+        ocr_bbox_elem = [{'type': 'text', 'bbox':box, 'interactivity':False, 'content':txt, 'source': 'box_ocr_content_ocr'} 
+                        for box, txt in zip(ocr_bbox[:min_len], ocr_text[:min_len]) 
+                        if int_box_area(box, w, h) > 0]
+    else:
+        ocr_bbox_elem = [] 
     xyxy_elem = [{'type': 'icon', 'bbox':box, 'interactivity':True, 'content':None} for box in xyxy.tolist() if int_box_area(box, w, h) > 0]
     filtered_boxes = remove_overlap_new(boxes=xyxy_elem, iou_threshold=iou_threshold, ocr_bbox=ocr_bbox_elem)
-    
+
+    # Ensure filtered_boxes is a list of dicts (handle edge case when OCR is empty)
+    if filtered_boxes and not isinstance(filtered_boxes[0], dict):
+        # If filtered_boxes returned wrong format, use xyxy_elem directly
+        filtered_boxes = xyxy_elem
+
     # sort the filtered_boxes so that the one with 'content': None is at the end, and get the index of the first 'content': None
-    filtered_boxes_elem = sorted(filtered_boxes, key=lambda x: x['content'] is None)
+    filtered_boxes_elem = sorted(filtered_boxes, key=lambda x: x.get('content') is None if isinstance(x, dict) else True)
     # get the index of the first 'content': None
     starting_idx = next((i for i, box in enumerate(filtered_boxes_elem) if box['content'] is None), -1)
     filtered_boxes = torch.tensor([box['bbox'] for box in filtered_boxes_elem])
