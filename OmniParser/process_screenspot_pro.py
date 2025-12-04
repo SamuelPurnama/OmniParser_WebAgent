@@ -72,7 +72,7 @@ class ScreenSpotProProcessor:
         )
         print(f"✓ Caption model loaded: {caption_model_name}")
 
-    def load_dataset(self, dataset_name="Voxel51/ScreenSpot-Pro", split="test"):
+    def load_dataset(self, dataset_name="Voxel51/ScreenSpot-Pro", split="train"):
         """Load ScreenSpot-Pro dataset from Hugging Face.
 
         Args:
@@ -196,7 +196,7 @@ class ScreenSpotProProcessor:
             'txt_path': str(txt_path)
         }
 
-    def process_dataset(self, dataset_name="Voxel51/ScreenSpot-Pro", split="test", max_samples=None):
+    def process_dataset(self, dataset_name="Voxel51/ScreenSpot-Pro", split="train", max_samples=None):
         """Process entire dataset.
 
         Args:
@@ -278,8 +278,8 @@ def main():
                         help="Output directory for processed results")
     parser.add_argument("--dataset_name", type=str, default="Voxel51/ScreenSpot-Pro",
                         help="Hugging Face dataset name")
-    parser.add_argument("--split", type=str, default="test",
-                        help="Dataset split to process")
+    parser.add_argument("--split", type=str, default="train",
+                        help="Dataset split to process (default: 'train' - only split available)")
     parser.add_argument("--max_samples", type=int, default=None,
                         help="Maximum number of samples to process (for testing)")
     parser.add_argument("--yolo_model_path", type=str, default="weights/icon_detect/model.pt",
