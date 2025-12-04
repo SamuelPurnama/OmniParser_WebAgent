@@ -129,14 +129,21 @@ def get_parsed_content_icon(filtered_boxes, starting_idx, image_source, caption_
     
     generated_texts = []
     device = model.device
-    for i in range(0, len(croped_pil_image), batch_size):
+    total_icons = len(croped_pil_image)
+    num_batches = (total_icons + batch_size - 1) // batch_size
+    print(f"Captioning {total_icons} icons in {num_batches} batches (device: {device}, batch_size: {batch_size})...")
+
+    for batch_idx, i in enumerate(range(0, len(croped_pil_image), batch_size), 1):
         start = time.time()
         batch = croped_pil_image[i:i+batch_size]
+        print(f"  Batch {batch_idx}/{num_batches}: Processing {len(batch)} icons...", end=' ', flush=True)
+
         t1 = time.time()
         if model.device.type == 'cuda':
             inputs = processor(images=batch, text=[prompt]*len(batch), return_tensors="pt", do_resize=False).to(device=device, dtype=torch.float16)
         else:
             inputs = processor(images=batch, text=[prompt]*len(batch), return_tensors="pt").to(device=device)
+
         if 'florence' in model.config.name_or_path:
             generated_ids = model.generate(
                 input_ids=inputs["input_ids"],
@@ -148,9 +155,13 @@ def get_parsed_content_icon(filtered_boxes, starting_idx, image_source, caption_
             )
         else:
             generated_ids = model.generate(**inputs, max_length=100, num_beams=5, no_repeat_ngram_size=2, early_stopping=True, num_return_sequences=1) # temperature=0.01, do_sample=True,
+
         generated_text = processor.batch_decode(generated_ids, skip_special_tokens=True)
         generated_text = [gen.strip() for gen in generated_text]
         generated_texts.extend(generated_text)
+
+        elapsed = time.time() - start
+        print(f"Done in {elapsed:.2f}s ({elapsed/len(batch):.2f}s per icon)")
     
     return generated_texts
 

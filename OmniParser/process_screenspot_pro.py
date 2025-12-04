@@ -1,10 +1,17 @@
 """
 Pipeline to process all images in the ScreenSpot-Pro dataset using OmniParser.
 This script segments all images and stores results locally organized by labels.
+
+Features:
+- Automatic device detection (GPU/CPU)
+- Robust error handling with resume capability
+- Organized output by application/platform
+- Progress tracking and summary generation
 """
 
 import os
 import json
+import sys
 import torch
 from PIL import Image
 from tqdm import tqdm
@@ -12,6 +19,13 @@ from datasets import load_dataset
 import base64
 import io
 from pathlib import Path
+from typing import Optional, Dict, Any, List
+import traceback
+
+# Suppress multiprocessing cleanup warnings on Python 3.12+
+if sys.version_info >= (3, 12):
+    import warnings
+    warnings.filterwarnings('ignore', category=ResourceWarning, message='.*ResourceTracker.*')
 
 from util.utils import (
     check_ocr_box,
@@ -34,7 +48,7 @@ class ScreenSpotProProcessor:
         iou_threshold=0.1,
         use_paddleocr=True,
         imgsz=640,
-        device='cuda'
+        device: Optional[str] = None
     ):
         """Initialize the processor with models and configuration.
 
@@ -57,9 +71,31 @@ class ScreenSpotProProcessor:
         self.iou_threshold = iou_threshold
         self.use_paddleocr = use_paddleocr
         self.imgsz = imgsz
+
+        # Auto-detect device if not specified
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Verify device availability
+        if device == 'cuda' and not torch.cuda.is_available():
+            print(f"⚠️  WARNING: CUDA requested but not available. Falling back to CPU.")
+            print(f"⚠️  Processing will be MUCH slower on CPU (~30s per image vs ~3s on GPU)")
+            device = 'cpu'
+        
         self.device = device
 
-        print("Loading models...")
+        print(f"Device: {self.device}")
+        if self.device == 'cuda':
+            print(f"GPU: {torch.cuda.get_device_name(0)}")
+            print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+
+        # Validate model paths
+        if not Path(yolo_model_path).exists():
+            raise FileNotFoundError(f"YOLO model not found at: {yolo_model_path}")
+        if not Path(caption_model_path).exists():
+            raise FileNotFoundError(f"Caption model not found at: {caption_model_path}")
+
+        print("\nLoading models...")
         # Load YOLO model
         self.yolo_model = get_yolo_model(model_path=yolo_model_path)
         print(f"✓ YOLO model loaded from {yolo_model_path}")
@@ -68,7 +104,7 @@ class ScreenSpotProProcessor:
         self.caption_model_processor = get_caption_model_processor(
             model_name=caption_model_name,
             model_name_or_path=caption_model_path,
-            device=device
+            device=self.device  # Use self.device instead of device parameter
         )
         print(f"✓ Caption model loaded: {caption_model_name}")
 
@@ -87,7 +123,33 @@ class ScreenSpotProProcessor:
         print(f"✓ Dataset loaded: {len(dataset)} samples")
         return dataset
 
-    def process_single_image(self, image, metadata=None):
+    def _extract_metadata_field(self, sample: Dict, field_name: str) -> str:
+        """Safely extract metadata field, handling various data formats.
+        
+        Args:
+            sample: Dataset sample dictionary
+            field_name: Name of the field to extract
+            
+        Returns:
+            Extracted field value or 'unknown'
+        """
+        field = sample.get(field_name, {})
+        
+        # Handle different formats
+        if isinstance(field, dict):
+            # Try 'label' first, then 'name', then any string value
+            return field.get('label') or field.get('name') or (
+                next((v for v in field.values() if isinstance(v, str)), 'unknown')
+            )
+        elif isinstance(field, str):
+            return field
+        elif field is None:
+            return 'unknown'
+        else:
+            # Try to convert to string
+            return str(field) if field else 'unknown'
+
+    def process_single_image(self, image: Image.Image, metadata: Optional[Dict] = None) -> Dict[str, Any]:
         """Process a single image with OmniParser.
 
         Args:
@@ -97,6 +159,10 @@ class ScreenSpotProProcessor:
         Returns:
             dict with processed results
         """
+        # Ensure image is RGB format
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
         # Calculate box overlay ratio for drawing config
         box_overlay_ratio = image.size[0] / 3200
         draw_bbox_config = {
@@ -128,7 +194,8 @@ class ScreenSpotProProcessor:
             caption_model_processor=self.caption_model_processor,
             ocr_text=text,
             iou_threshold=self.iou_threshold,
-            imgsz=self.imgsz
+            imgsz=self.imgsz,
+            batch_size=64  # Smaller batch size for better progress visibility
         )
 
         # Decode the base64 image
@@ -148,20 +215,31 @@ class ScreenSpotProProcessor:
             'ocr_bbox': ocr_bbox
         }
 
-    def save_results(self, results, sample_idx, metadata=None):
+    def save_results(self, results: Dict[str, Any], sample_idx: int, metadata: Optional[Dict] = None) -> Dict[str, str]:
         """Save processed results to disk.
 
         Args:
             results: Dict containing processed results
             sample_idx: Index of the sample
             metadata: Optional metadata from dataset
+
+        Returns:
+            Dict with paths to saved files
         """
         # Create directory structure based on metadata
         if metadata:
             # Organize by group/application/platform
-            group = metadata.get('group', 'unknown')
-            application = metadata.get('application', 'unknown')
-            platform = metadata.get('platform', 'unknown')
+            # Sanitize directory names (remove invalid characters)
+            def sanitize_name(name: str) -> str:
+                """Sanitize directory name by removing invalid characters."""
+                invalid_chars = '<>:"/\\|?*'
+                for char in invalid_chars:
+                    name = name.replace(char, '_')
+                return name.strip() or 'unknown'
+            
+            group = sanitize_name(str(metadata.get('group', 'unknown')))
+            application = sanitize_name(str(metadata.get('application', 'unknown')))
+            platform = sanitize_name(str(metadata.get('platform', 'unknown')))
 
             save_dir = self.output_dir / group / application / platform
         else:
@@ -171,7 +249,7 @@ class ScreenSpotProProcessor:
 
         # Save annotated image
         image_path = save_dir / f"sample_{sample_idx:05d}_annotated.png"
-        results['labeled_image'].save(image_path)
+        results['labeled_image'].save(image_path, format='PNG', optimize=True)
 
         # Save parsed content as JSON
         json_path = save_dir / f"sample_{sample_idx:05d}_parsed.json"
@@ -182,12 +260,12 @@ class ScreenSpotProProcessor:
             'ocr_text': results['ocr_text'],
             'metadata': metadata
         }
-        with open(json_path, 'w') as f:
-            json.dump(parsed_data, f, indent=2)
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(parsed_data, f, indent=2, ensure_ascii=False)
 
         # Save parsed content as text
         txt_path = save_dir / f"sample_{sample_idx:05d}_parsed.txt"
-        with open(txt_path, 'w') as f:
+        with open(txt_path, 'w', encoding='utf-8') as f:
             f.write(results['parsed_content_formatted'])
 
         return {
@@ -196,13 +274,20 @@ class ScreenSpotProProcessor:
             'txt_path': str(txt_path)
         }
 
-    def process_dataset(self, dataset_name="Voxel51/ScreenSpot-Pro", split="train", max_samples=None):
+    def process_dataset(
+        self, 
+        dataset_name: str = "Voxel51/ScreenSpot-Pro", 
+        split: str = "train", 
+        max_samples: Optional[int] = None,
+        resume: bool = True
+    ):
         """Process entire dataset.
 
         Args:
             dataset_name: Name of dataset on Hugging Face
             split: Dataset split to load
             max_samples: Maximum number of samples to process (None for all)
+            resume: If True, skip already processed samples based on summary file
         """
         # Load dataset
         dataset = self.load_dataset(dataset_name, split)
@@ -214,59 +299,114 @@ class ScreenSpotProProcessor:
 
         # Create summary file
         summary_path = self.output_dir / "processing_summary.json"
-        summary = {
-            'dataset_name': dataset_name,
-            'split': split,
-            'total_samples': len(dataset),
-            'processed_samples': [],
-            'failed_samples': []
-        }
+        
+        # Load existing summary if resuming
+        if resume and summary_path.exists():
+            try:
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+                processed_indices = {item['idx'] for item in summary.get('processed_samples', [])}
+                print(f"📋 Found existing summary: {len(processed_indices)} samples already processed")
+                print(f"   Resuming from sample {max(processed_indices) + 1 if processed_indices else 0}")
+            except Exception as e:
+                print(f"⚠️  Could not load existing summary: {e}")
+                print("   Starting fresh...")
+                summary = {
+                    'dataset_name': dataset_name,
+                    'split': split,
+                    'total_samples': len(dataset),
+                    'processed_samples': [],
+                    'failed_samples': []
+                }
+                processed_indices = set()
+        else:
+            summary = {
+                'dataset_name': dataset_name,
+                'split': split,
+                'total_samples': len(dataset),
+                'processed_samples': [],
+                'failed_samples': []
+            }
+            processed_indices = set()
 
         # Process each sample
         print(f"\nProcessing {len(dataset)} samples...")
-        for idx, sample in enumerate(tqdm(dataset, desc="Processing images")):
-            try:
-                # Get image from sample
-                image = sample['image']
+        try:
+            for idx, sample in enumerate(tqdm(dataset, desc="Processing images", initial=len(processed_indices))):
+                # Skip if already processed
+                if resume and idx in processed_indices:
+                    continue
+                
+                try:
+                    # Get image from sample
+                    image = sample['image']
+                    
+                    # Ensure image is RGB
+                    if image.mode != 'RGB':
+                        image = image.convert('RGB')
 
-                # Extract metadata
-                metadata = {
-                    'instruction': sample.get('instruction', ''),
-                    'application': sample.get('application', {}).get('label', 'unknown'),
-                    'group': sample.get('group', {}).get('label', 'unknown'),
-                    'platform': sample.get('platform', {}).get('label', 'unknown')
-                }
+                    # Extract metadata with robust field extraction
+                    metadata = {
+                        'instruction': sample.get('instruction', '') or '',
+                        'application': self._extract_metadata_field(sample, 'application'),
+                        'group': self._extract_metadata_field(sample, 'group'),
+                        'platform': self._extract_metadata_field(sample, 'platform')
+                    }
 
-                # Process image
-                results = self.process_single_image(image, metadata)
+                    # Process image
+                    results = self.process_single_image(image, metadata)
 
-                # Save results
-                saved_paths = self.save_results(results, idx, metadata)
+                    # Save results
+                    saved_paths = self.save_results(results, idx, metadata)
 
-                # Update summary
-                summary['processed_samples'].append({
-                    'idx': idx,
-                    'metadata': metadata,
-                    'paths': saved_paths
-                })
+                    # Update summary
+                    summary['processed_samples'].append({
+                        'idx': idx,
+                        'metadata': metadata,
+                        'paths': saved_paths
+                    })
+                    
+                    # Save summary periodically (every 10 samples)
+                    if (idx + 1) % 10 == 0:
+                        with open(summary_path, 'w', encoding='utf-8') as f:
+                            json.dump(summary, f, indent=2, ensure_ascii=False)
 
-            except Exception as e:
-                print(f"\n✗ Error processing sample {idx}: {str(e)}")
-                summary['failed_samples'].append({
-                    'idx': idx,
-                    'error': str(e)
-                })
-                continue
+                except KeyboardInterrupt:
+                    print(f"\n\n⚠️  Processing interrupted by user at sample {idx}")
+                    print(f"   Progress saved. Resume by running the same command again.")
+                    raise  # Re-raise to be caught by outer try/finally
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"\n✗ Error processing sample {idx}: {error_msg}")
+                    summary['failed_samples'].append({
+                        'idx': idx,
+                        'error': error_msg,
+                        'traceback': traceback.format_exc()
+                    })
+                    # Save progress periodically even on errors
+                    if (idx + 1) % 10 == 0:
+                        with open(summary_path, 'w', encoding='utf-8') as f:
+                            json.dump(summary, f, indent=2, ensure_ascii=False)
+                    continue
+        finally:
+            # Save summary even if interrupted
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                json.dump(summary, f, indent=2, ensure_ascii=False)
 
-        # Save summary
-        with open(summary_path, 'w') as f:
-            json.dump(summary, f, indent=2)
-
-        print(f"\n✓ Processing complete!")
-        print(f"  Processed: {len(summary['processed_samples'])} samples")
-        print(f"  Failed: {len(summary['failed_samples'])} samples")
-        print(f"  Results saved to: {self.output_dir}")
-        print(f"  Summary saved to: {summary_path}")
+        print(f"\n{'='*70}")
+        print(f"✓ Processing complete!")
+        print(f"{'='*70}")
+        print(f"  ✅ Processed: {len(summary['processed_samples'])} samples")
+        print(f"  ❌ Failed: {len(summary['failed_samples'])} samples")
+        print(f"  📁 Results saved to: {self.output_dir}")
+        print(f"  📄 Summary saved to: {summary_path}")
+        if summary['failed_samples']:
+            print(f"\n  ⚠️  Failed samples:")
+            for failed in summary['failed_samples'][:5]:  # Show first 5
+                print(f"     - Sample {failed['idx']}: {failed['error'][:60]}...")
+            if len(summary['failed_samples']) > 5:
+                print(f"     ... and {len(summary['failed_samples']) - 5} more")
+        print(f"{'='*70}")
 
 
 def main():
@@ -297,8 +437,8 @@ def main():
                         help="Use PaddleOCR instead of EasyOCR")
     parser.add_argument("--imgsz", type=int, default=640,
                         help="Image size for YOLO detection")
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
-                        help="Device to run on (cuda/cpu)")
+    parser.add_argument("--device", type=str, default=None,
+                        help="Device to run on (cuda/cpu/None for auto-detect)")
 
     args = parser.parse_args()
 
