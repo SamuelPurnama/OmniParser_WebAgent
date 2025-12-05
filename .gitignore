@@ -94,3 +94,25 @@ web_agent/recorder_sessions/
 web_agent/test_approach/data/
 web_agent/test_approach/bounding_box_sessions/
 
+# ============================================
+# GeminiCUA_Vision specific
+# ============================================
+# Evaluation results (all results are in results/ directory)
+GeminiCUA_Vision/results/
+GeminiCUA_Vision/data/results/
+GeminiCUA_Vision/evaluation.log
+
+# Temporary test images (keep dataset images)
+GeminiCUA_Vision/*.png
+GeminiCUA_Vision/uivision_sample_*.png
+GeminiCUA_Vision/test_image.png
+GeminiCUA_Vision/sample_*.png
+!GeminiCUA_Vision/datasets/**/*.png
+
+# Dataset caches
+GeminiCUA_Vision/*.sqlite3
+GeminiCUA_Vision/db.sqlite3
+
+# Pipeline runtime data
+GeminiCUA_Vision/src/pipeline/data/results/
+
